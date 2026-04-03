@@ -1,0 +1,116 @@
+name: legal-contract-review
+version: "1.0.0"
+description: >
+  An AI agent environment for reviewing legal contracts. The agent reads
+  contract sections, identifies missing protective clauses and risky terms,
+  suggests redline language, and produces a structured review report.
+  Graders are fully deterministic — ground truth is a programmatic fault manifest
+  injected at contract generation time.
+
+author: "Hackathon Submission"
+license: MIT
+tags:
+  - legal
+  - nlp
+  - contract-review
+  - real-world
+  - openenv
+
+tasks:
+  - id: easy
+    difficulty: easy
+    description: "Review a 1-page mutual NDA for 2 injected faults (1 missing clause, 1 risky clause)."
+    max_steps: 20
+    score_range: [0.0, 1.0]
+
+  - id: medium
+    difficulty: medium
+    description: "Review an 8-page SaaS agreement for 3 faults including a buried auto-renewal clause."
+    max_steps: 30
+    score_range: [0.0, 1.0]
+
+  - id: hard
+    difficulty: hard
+    description: >
+      Review a 20-page M&A term sheet for 3 real faults + 2 trap clauses (false positive bait).
+      Agent must discriminate between genuinely risky clauses and market-standard provisions.
+    max_steps: 40
+    score_range: [0.0, 1.0]
+
+api:
+  reset:
+    method: POST
+    path: /reset
+    body:
+      task_id: string
+      max_steps: integer
+
+  step:
+    method: POST
+    path: /step
+    body:
+      session_id: string
+      action:
+        action_type: string
+        params: object
+
+  state:
+    method: GET
+    path: /state
+    query:
+      session_id: string
+
+observation_space:
+  task_id: string
+  difficulty: string
+  description: string
+  contract_title: string
+  available_sections: list[string]
+  section_statuses: list[SectionStatus]
+  current_section_text: string | null
+  flags: list[AgentFlag]
+  actions_taken: list[string]
+  last_action_result: string
+  step: integer
+  done: boolean
+  pipeline_passed: boolean
+  total_faults_in_contract: integer
+  faults_found_so_far: integer
+
+action_space:
+  - action_type: read_section
+    params:
+      section: string
+  - action_type: flag_clause
+    params:
+      section: string
+      clause_id: string
+      risk_level: "low|medium|critical"
+      reason: string
+  - action_type: mark_missing
+    params:
+      section: string
+      clause_id: string
+      risk_level: "low|medium|critical"
+      reason: string
+  - action_type: suggest_redline
+    params:
+      clause_id: string
+      replacement_text: string
+  - action_type: approve_section
+    params:
+      section: string
+  - action_type: summarize
+    params: {}
+
+reward:
+  true_positive_critical: +0.8
+  true_positive_medium: +0.6
+  true_positive_low: +0.4
+  correct_risk_level_bonus: +0.1
+  redline_match_bonus: +0.3
+  false_positive_penalty: -0.4
+  trap_clause_extra_penalty: -0.2
+  missed_critical_penalty: -1.0
+  flag_without_reading_penalty: -0.2
+  unknown_action_penalty: -0.1
