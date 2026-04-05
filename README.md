@@ -1,3 +1,13 @@
+---
+title: Legal Contract Review — OpenEnv
+emoji: 📄
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+license: mit
+---
+
 # Legal Contract Review — OpenEnv
 
 An RL environment where an agent reviews legal contracts, identifies risks, detects missing clauses, and proposes fixes.
