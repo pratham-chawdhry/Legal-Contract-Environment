@@ -88,7 +88,7 @@ python inference.py --quiet
 ### REST API
 
 ```bash
-python -m uvicorn src.server:app --host 0.0.0.0 --port 7860
+python -m uvicorn server.app:app --host 0.0.0.0 --port 7860
 
 # Health check
 curl http://localhost:7860/health
