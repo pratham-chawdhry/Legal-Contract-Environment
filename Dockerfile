@@ -11,8 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the package
+# Copy code
 COPY src/ ./src/
+COPY server/ ./server/
+
+# Ensure imports work
+ENV PYTHONPATH=/app
 
 # Hugging Face Spaces expects port 7860
 ENV PORT=7860
@@ -21,4 +25,4 @@ EXPOSE 7860
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-CMD ["python", "-m", "uvicorn", "src.server:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["python", "-m", "uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]
