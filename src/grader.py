@@ -77,12 +77,7 @@ def grade_episode(
         if not matched:
             # Check if it accidentally hit a trap clause
             is_trap_flag = any(
-                t.section == flag.section and (
-                    t.clause_id == flag.clause_id or
-                    # trap in same section with same type also counts
-                    ((flag.flag_type == "risky"   and t.fault_type == "risky_clause") or
-                     (flag.flag_type == "missing" and t.fault_type == "missing_clause"))
-                )
+                t.section == flag.section and t.clause_id == flag.clause_id
                 for t in trap_faults
             )
             false_positives += 1

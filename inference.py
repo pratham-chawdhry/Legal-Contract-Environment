@@ -57,39 +57,6 @@ SUCCESS_SCORE_THRESHOLD = 0.1   # score in [0, 1] to count as success
 
 FALLBACK_ACTION = ContractAction(action_type="summarize", params={})
 
-# ------------------------------------------------------------------ #
-# Per-task missing-clause hints
-# ------------------------------------------------------------------ #
-
-TASK_MISSING_HINTS: Dict[str, str] = {
-    "easy": (
-        "CHECKLIST — clauses that MUST exist in a mutual NDA:\n"
-        "  • Liability cap / limitation of liability  → if absent: mark_missing in 'obligations', clause_id='liability_cap'\n"
-        "  • Survival clause (confidentiality survives termination) → if absent: mark_missing in 'term', clause_id='survival_clause'\n"
-        "  • Return/destruction of confidential info on termination\n"
-        "  Risky patterns to flag:\n"
-        "  • Unlimited / uncapped indemnification → flag in 'obligations', clause_id='unlimited_indemnity'\n"
-    ),
-    "medium": (
-        "CHECKLIST — clauses that MUST exist in a SaaS agreement:\n"
-        "  • SLA / uptime commitment → if absent: mark_missing in 'data_privacy', clause_id='sla_uptime'\n"
-        "  • Data processing addendum / GDPR obligations\n"
-        "  Predatory patterns to flag:\n"
-        "  • Auto-renewal with 15%% price escalation BURIED in Definitions → flag in 'definitions', clause_id='auto_renewal_buried'\n"
-        "  • Irrevocable, perpetual, sublicensable data license surviving termination → flag in 'intellectual_property', clause_id='irrevocable_data_license'\n"
-        "  • Liability cap without carve-outs for data breach / gross negligence → flag in 'limitation_liability', clause_id='liability_cap_no_carveouts'\n"
-    ),
-    "hard": (
-        "CHECKLIST — clauses that MUST exist in an M&A term sheet:\n"
-        "  • R&W (Representations & Warranties) insurance → if absent: mark_missing in 'conditions_closing', clause_id='rep_warranty_insurance'\n"
-        "  Genuine risks to flag (not traps):\n"
-        "  • GPLv3 copyleft: 34%% of codebase, triggers on distribution → flag in 'schedule_a_open_source', clause_id='gplv3_copyleft_risk'\n"
-        "  • Earnout: Acquirer 'sole discretion' + CFO gate excludes channel revenue → flag in 'schedule_b_earnout_definition', clause_id='earnout_acquirer_discretion'\n"
-        "  DO NOT flag these (market-standard, flagging = false positive penalty):\n"
-        "  • 1%% tipping basket in indemnification\n"
-        "  • 18-month survival for general reps\n"
-    ),
-}
 
 # ------------------------------------------------------------------ #
 # System prompt (unchanged from original)
@@ -231,7 +198,6 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
             "Call summarize NOW to avoid hitting the step limit without a graded result."
         )
 
-    task_hint = TASK_MISSING_HINTS.get(obs.task_id, "")
     hints_str = ("\n" + "\n".join(hints)) if hints else ""
 
     return textwrap.dedent(f"""
@@ -259,7 +225,6 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
     {actions_str}
     {section_text_str}
 
-    {task_hint}
     {hints_str}
 
     Respond with exactly ONE action JSON object.

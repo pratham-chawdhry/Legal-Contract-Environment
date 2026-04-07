@@ -67,10 +67,13 @@ def reset(req: Optional[ResetRequest] = Body(default=None)):
 def step(body: Dict[str, Any] = Body(...)):
     global current_session_id
 
-    if current_session_id is None:
+    session_id = body.pop("session_id", None) or current_session_id
+    if session_id is None:
         raise HTTPException(status_code=400, detail="Call /reset first")
 
-    env = _sessions.get(current_session_id)
+    env = _sessions.get(session_id)
+    if env is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 
     try:
         action = ContractAction(**body)

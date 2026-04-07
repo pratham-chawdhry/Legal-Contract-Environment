@@ -220,7 +220,8 @@ class LegalContractEnv:
             if any(
                 af.section == f.section and (
                     af.clause_id == f.clause_id or
-                    af.flag_type in (f.fault_type, "missing" if "missing" in f.fault_type else "risky")
+                    (af.flag_type == "risky"   and f.fault_type == "risky_clause") or
+                    (af.flag_type == "missing" and f.fault_type == "missing_clause")
                 )
                 for af in self._flags
             )

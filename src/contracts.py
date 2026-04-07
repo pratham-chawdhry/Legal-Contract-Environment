@@ -320,7 +320,7 @@ PURCHASE PRICE AND ADJUSTMENTS
     for deviations from Target Working Capital of $3,200,000 at Closing.
 2.3 Earnout: An additional $5,000,000 shall be payable if the acquired business
     achieves $18,000,000 in Annual Recurring Revenue within 24 months of Closing,
-    measured in accordance with Schedule C.
+    measured in accordance with Schedule B.
 2.4 Escrow: $4,200,000 (10% of Base Purchase Price) shall be held in escrow for
     18 months to cover indemnification claims.
 """.strip(),
