@@ -1,20 +1,29 @@
 """
-inference.py — Legal Contract Review Agent  (FIXED)
-=====================================================
-Key fixes vs original:
-  1. MAX_STEPS raised to 30 (was 20) — gives room to read + flag + redline + summarize.
-  2. System prompt now tells agent to use descriptive clause IDs, not generic C1/C2.
-  3. Step-budget logic: when <=1 step remains, force summarize so episode always
-     ends with a graded result rather than hitting the hard cap.
-  4. Missing-clause hints injected per task so agent knows what to look for.
-  5. build_user_prompt shows remaining steps prominently.
+inference.py — Legal Contract Review Agent
+===========================================
+
+Environment variables (set before running):
+    API_BASE_URL   LLM endpoint.  Default: http://localhost:11434/v1  (Ollama)
+    MODEL_NAME     Model name.    Default: qwen3-vl:235b-cloud
+    HF_TOKEN       API key.       Default: "ollama"  (Ollama ignores the key)
+    LOCAL_IMAGE_NAME  Docker image name if using from_docker_image() (optional)
+
+Ollama satisfies the "OpenAI Client" requirement because it exposes an
+OpenAI-compatible REST API at http://localhost:11434/v1.
+Run:  ollama serve   (in a separate terminal before running this script)
+
+STDOUT FORMAT (OpenEnv spec — do not change):
+    [START] task=<task_name> env=<benchmark> model=<model_name>
+    [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 
 Usage:
-  python inference.py                 # run all three tasks
-  python inference.py --task easy
-  python inference.py --task hard --steps 35
+    python inference.py                  # run all three tasks
+    python inference.py --task easy
+    python inference.py --task hard --steps 35
 """
 from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -22,7 +31,8 @@ import sys
 import textwrap
 from typing import Any, Dict, List, Optional
 
-from ollama import chat
+# ── OpenAI client pointed at Ollama (satisfies "must use OpenAI Client" rule) ──
+from openai import OpenAI
 
 sys.path.insert(0, os.path.dirname(__file__))
 from src.environment import LegalContractEnv
@@ -32,18 +42,23 @@ from src.models import ContractAction, ContractObservation
 # Configuration
 # ------------------------------------------------------------------ #
 
-API_BASE_URL = None
-API_KEY      = os.getenv("GROQ_API_KEY") or os.getenv("API_KEY") or "MISSING_KEY"
-MODEL_NAME   = os.getenv("MODEL_NAME") or "llama-3.3-70b-versatile"
+# Ollama's OpenAI-compatible endpoint — no real API key needed
+API_BASE_URL     = os.getenv("API_BASE_URL",  "http://localhost:11434/v1")
+MODEL_NAME       = os.getenv("MODEL_NAME",    "qwen3-vl:235b-cloud")
+API_KEY          = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "ollama")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # only needed for docker-based envs
 
-MAX_STEPS   = int(os.getenv("MAX_STEPS", "30"))   # FIX: was 20
-TEMPERATURE = float(os.getenv("TEMPERATURE", "0.1"))
-MAX_TOKENS  = int(os.getenv("MAX_TOKENS", "500"))
+BENCHMARK        = "legal_contract_review"
+MAX_STEPS        = int(os.getenv("MAX_STEPS",    "30"))
+TEMPERATURE      = float(os.getenv("TEMPERATURE", "0.1"))
+MAX_TOKENS       = int(os.getenv("MAX_TOKENS",   "500"))
+
+SUCCESS_SCORE_THRESHOLD = 0.1   # score in [0, 1] to count as success
 
 FALLBACK_ACTION = ContractAction(action_type="summarize", params={})
 
 # ------------------------------------------------------------------ #
-# Per-task missing-clause hints injected into the prompt
+# Per-task missing-clause hints
 # ------------------------------------------------------------------ #
 
 TASK_MISSING_HINTS: Dict[str, str] = {
@@ -77,7 +92,7 @@ TASK_MISSING_HINTS: Dict[str, str] = {
 }
 
 # ------------------------------------------------------------------ #
-# System prompt
+# System prompt (unchanged from original)
 # ------------------------------------------------------------------ #
 
 SYSTEM_PROMPT = textwrap.dedent("""
@@ -129,9 +144,35 @@ RULES:
 - If STEPS REMAINING <= 3, call summarize immediately.
 """).strip()
 
+# ------------------------------------------------------------------ #
+# OpenEnv stdout logging (spec-required — do not modify format)
+# ------------------------------------------------------------------ #
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val   = error if error else "null"
+    done_val    = str(done).lower()
+    action_safe = action.replace("\n", " ").replace("\r", "")[:200]
+    print(
+        f"[STEP] step={step} action={action_safe} reward={reward:.2f} "
+        f"done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={score:.2f} rewards={rewards_str}",
+        flush=True,
+    )
 
 # ------------------------------------------------------------------ #
-# Prompt builder
+# Prompt builder (unchanged from original)
 # ------------------------------------------------------------------ #
 
 def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> str:
@@ -159,8 +200,7 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
 
     redlined = [f for f in obs.flags if getattr(f, "redline_suggested", False)]
     redlines_str = "\n".join(
-        f"  [{f.clause_id}] — redline submitted"
-        for f in redlined
+        f"  [{f.clause_id}] — redline submitted" for f in redlined
     ) or "  (none yet)"
 
     section_text_str = ""
@@ -172,8 +212,7 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
 
     actions_str = "\n".join(f"  {a}" for a in obs.actions_taken[-6:]) or "  (none yet)"
 
-    hints = []
-
+    hints: List[str] = []
     read_actions = sum(1 for a in obs.actions_taken if "read_section" in a)
     flag_actions = sum(
         1 for a in obs.actions_taken if "flag_clause" in a or "mark_missing" in a
@@ -183,13 +222,9 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
             "WARNING: Several sections read but nothing flagged yet. "
             "Use flag_clause / mark_missing if issues exist, or approve_section if clean."
         )
-
     unread = [s for s in obs.section_statuses if not s.read]
     if not unread and not obs.done:
-        hints.append(
-            "ALL SECTIONS READ. Call summarize to finalise the review."
-        )
-
+        hints.append("ALL SECTIONS READ. Call summarize to finalise the review.")
     if steps_remaining <= 3 and not obs.done:
         hints.append(
             f"URGENT — ONLY {steps_remaining} STEPS REMAINING. "
@@ -230,9 +265,8 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
     Respond with exactly ONE action JSON object.
     """).strip()
 
-
 # ------------------------------------------------------------------ #
-# Action parser
+# Action parser (unchanged from original)
 # ------------------------------------------------------------------ #
 
 def parse_llm_response(text: str) -> ContractAction:
@@ -246,156 +280,157 @@ def parse_llm_response(text: str) -> ContractAction:
     end   = text.rfind("}") + 1
     if start == -1 or end == 0:
         return FALLBACK_ACTION
-    json_str = text[start:end]
     try:
-        data = json.loads(json_str)
+        data = json.loads(text[start:end])
         return ContractAction(**data)
     except Exception:
         return FALLBACK_ACTION
-
 
 # ------------------------------------------------------------------ #
 # Single episode runner
 # ------------------------------------------------------------------ #
 
 def run_episode(
+    client: OpenAI,
     task_id: str,
     max_steps: int = MAX_STEPS,
     verbose: bool = True,
 ) -> Dict[str, Any]:
     env = LegalContractEnv(task_id=task_id, max_steps=max_steps)
-    obs = env.reset()
 
-    conversation_history: List[Dict[str, str]] = []
-    total_reward: float = 0.0
-    steps_taken: int    = 0
+    history:     List[Dict[str, str]] = []
+    rewards:     List[float]          = []
+    steps_taken: int                  = 0
+    score:       float                = 0.0
+    success:     bool                 = False
 
-    if verbose:
-        print(f"\n{'='*60}")
-        print(f"TASK: {task_id.upper()} — {obs.contract_title}")
-        print(f"{'='*60}")
-        print(f"Description: {obs.description}")
-        print(f"Sections to review: {len(obs.available_sections)}")
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
-    for step in range(1, max_steps + 1):
-        if obs.done:
-            if verbose:
-                print(f"\n  Review completed at step {step - 1}!")
-            break
+    try:
+        obs = env.reset()
 
-        steps_remaining = max_steps - step
+        if verbose:
+            print(f"\n{'='*60}", file=sys.stderr)
+            print(f"TASK: {task_id.upper()} — {obs.contract_title}", file=sys.stderr)
+            print(f"{'='*60}", file=sys.stderr)
 
-        # Force summarize in the last step to guarantee a graded result
-        if steps_remaining <= 1 and not obs.done:
-            if verbose:
-                print(f"\n[Step {step}] Forcing summarize — step budget exhausted.")
-            action = ContractAction(action_type="summarize", params={})
-        else:
-            user_prompt = build_user_prompt(obs, step, max_steps)
-            conversation_history.append({"role": "user", "content": user_prompt})
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
+        for step in range(1, max_steps + 1):
+            if obs.done:
+                break
 
-            try:
-                response = chat(model='glm-5:cloud', messages=messages)
-                response_text = response.message.content or ""
-            except Exception as exc:
-                if verbose:
-                    print(f"  [Step {step}] API error: {exc}. Using fallback.")
-                response_text = ""
+            steps_remaining = max_steps - step
+
+            # Force summarize when budget is nearly exhausted
+            if steps_remaining <= 1 and not obs.done:
+                action        = ContractAction(action_type="summarize", params={})
+                response_text = json.dumps({"action_type": "summarize", "params": {}})
+            else:
+                user_prompt = build_user_prompt(obs, step, max_steps)
+                history.append({"role": "user", "content": user_prompt})
+                messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+
+                try:
+                    # ── OpenAI client → Ollama endpoint ──────────────────────
+                    completion = client.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=messages,
+                        temperature=TEMPERATURE,
+                        max_tokens=MAX_TOKENS,
+                        stream=False,
+                    )
+                    response_text = (completion.choices[0].message.content or "").strip()
+                except Exception as exc:
+                    print(f"[DEBUG] LLM error step {step}: {exc}", file=sys.stderr, flush=True)
+                    response_text = ""
+
+                history.append({"role": "assistant", "content": response_text or "{}"})
+
+                # Keep conversation window bounded (memory budget)
+                if len(history) > 24:
+                    history = history[-24:]
 
             action = parse_llm_response(response_text)
-            conversation_history.append({"role": "assistant", "content": response_text or "{}"})
 
-            # Bound history to last 24 turns
-            if len(conversation_history) > 24:
-                conversation_history = conversation_history[-24:]
+            result  = env.step(action)
+            obs     = result.observation
+            reward  = result.reward or 0.0
+            done    = result.done
+            error: Optional[str] = getattr(obs, "last_action_error", None) or None
+
+            rewards.append(reward)
+            steps_taken = step
+
+            log_step(
+                step=step,
+                action=response_text.replace("\n", " ")[:200],
+                reward=reward,
+                done=done,
+                error=error,
+            )
 
             if verbose:
-                print(f"\n[Step {step}] Raw response: {response_text[:130]}")
+                print(
+                    f"  [Step {step}] {action.action_type} | reward={reward:+.2f} | "
+                    f"caught={obs.faults_found_so_far}/{obs.total_faults_in_contract}",
+                    file=sys.stderr,
+                )
 
-        if verbose:
-            print(f"[Step {step}] Action: {action.action_type}({action.params})")
+            if done:
+                break
 
-        result     = env.step(action)
-        obs        = result.observation
-        total_reward += result.reward
-        steps_taken   = step
+        n_total = obs.total_faults_in_contract
+        n_caught = obs.faults_found_so_far
+        score   = min(max(n_caught / n_total if n_total > 0 else 0.0, 0.0), 1.0)
+        success = score >= SUCCESS_SCORE_THRESHOLD
 
-        if verbose:
-            n_flags   = len([f for f in obs.flags if f.flag_type == "risky"])
-            n_missing = len([f for f in obs.flags if f.flag_type == "missing"])
-            print(f"  Reward: {result.reward:+.2f} | "
-                  f"Flags: {n_flags} | Missing: {n_missing} | "
-                  f"Caught: {obs.faults_found_so_far}/{obs.total_faults_in_contract} | "
-                  f"Result: {obs.last_action_result[:90]}")
+    except Exception as exc:
+        print(f"[DEBUG] Episode error task={task_id}: {exc}", file=sys.stderr, flush=True)
 
-        if result.done:
-            break
+    finally:
+        try:
+            env.close()
+        except Exception as e:
+            print(f"[DEBUG] env.close() error: {e}", file=sys.stderr, flush=True)
 
-    n_total  = obs.total_faults_in_contract
-    n_caught = obs.faults_found_so_far
-    score    = n_caught / n_total if n_total > 0 else 0.0
-
-    if verbose:
-        print(f"\n--- Episode Summary ---")
-        print(f"  Score (fault catch rate):    {score:.2f}")
-        print(f"  Total reward:                {total_reward:.2f}")
-        print(f"  Steps taken:                 {steps_taken}")
-        print(f"  Review complete:             {obs.done}")
-        print(f"  Pipeline passed:             {obs.pipeline_passed}")
-        print(f"  Faults caught:               {n_caught}/{n_total}")
+        # Always emitted — even on exception
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
     return {
-        "task_id":         task_id,
-        "score":           round(score, 4),
-        "review_complete": obs.done,
-        "pipeline_passed": obs.pipeline_passed,
-        "total_reward":    round(total_reward, 4),
-        "steps_taken":     steps_taken,
-        "faults_caught":   n_caught,
-        "faults_total":    n_total,
+        "task_id":      task_id,
+        "score":        round(score, 4),
+        "success":      success,
+        "steps_taken":  steps_taken,
+        "total_reward": round(sum(rewards), 4),
     }
-
 
 # ------------------------------------------------------------------ #
 # Entry point
 # ------------------------------------------------------------------ #
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Legal Contract Review Agent — fixed inference"
-    )
-    parser.add_argument("--task", choices=["easy", "medium", "hard", "all"],
-                        default="all")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Legal Contract Review Agent")
+    parser.add_argument("--task",  choices=["easy", "medium", "hard", "all"], default="all")
     parser.add_argument("--steps", type=int, default=MAX_STEPS)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     tasks = ["easy", "medium", "hard"] if args.task == "all" else [args.task]
 
-    all_results = []
+    # OpenAI client pointed at local Ollama — no real key needed
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+    all_results: List[Dict[str, Any]] = []
     for task_id in tasks:
         result = run_episode(
+            client=client,
             task_id=task_id,
             max_steps=args.steps,
             verbose=not args.quiet,
         )
         all_results.append(result)
 
-    print("\n" + "="*60)
-    print("FINAL SCORES")
-    print("="*60)
-    total_score = 0.0
-    for r in all_results:
-        status = "PASSED" if r["pipeline_passed"] else "FAILED"
-        print(f"  {r['task_id']:8s} | score={r['score']:.2f} | "
-              f"reward={r['total_reward']:+.2f} | steps={r['steps_taken']:2d} | "
-              f"caught={r['faults_caught']}/{r['faults_total']} | {status}")
-        total_score += r["score"]
-
-    avg = total_score / len(all_results) if all_results else 0.0
-    print(f"\n  Average score: {avg:.4f}")
-    print("\nJSON_RESULTS:", json.dumps(all_results, indent=2))
+    # Summary to stderr — keeps stdout clean for the spec parser
+    print("\nJSON_RESULTS:", json.dumps(all_results, indent=2), file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,8 @@
-"""
-server.py — FastAPI server exposing the OpenEnv API.
-"""
 from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -25,8 +22,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory session store (single session for simplicity)
 _sessions: Dict[str, LegalContractEnv] = {}
+
+current_session_id: Optional[str] = None
 
 
 class ResetRequest(BaseModel):
@@ -50,32 +48,52 @@ def health():
 
 
 @app.post("/reset")
-def reset(req: ResetRequest):
-    env = LegalContractEnv(task_id=req.task_id, max_steps=req.max_steps)
-    session_id = f"{req.task_id}_{id(env)}"
+def reset(req: Optional[ResetRequest] = Body(default=None)):
+    global current_session_id
+
+    task_id = req.task_id if req else "easy"
+    max_steps = req.max_steps if req else 30
+
+    env = LegalContractEnv(task_id=task_id, max_steps=max_steps)
+    session_id = f"{task_id}_{id(env)}"
     _sessions[session_id] = env
+    current_session_id = session_id
+
     obs = env.reset()
-    return {"session_id": session_id, "observation": obs.model_dump()}
+    return obs.model_dump()
 
 
 @app.post("/step")
-def step(req: StepRequest):
-    env = _sessions.get(req.session_id)
-    if env is None:
-        raise HTTPException(status_code=404, detail="Session not found. Call /reset first.")
+def step(body: Dict[str, Any] = Body(...)):
+    global current_session_id
+
+    if current_session_id is None:
+        raise HTTPException(status_code=400, detail="Call /reset first")
+
+    env = _sessions.get(current_session_id)
+
     try:
-        action = ContractAction(**req.action)
+        action = ContractAction(**body)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Invalid action: {e}")
+
     result = env.step(action)
-    return result.model_dump()
+
+    return {
+        "observation": result.observation.model_dump(),
+        "reward": result.reward,
+        "done": result.done,
+    }
 
 
 @app.get("/state")
-def state(session_id: str):
-    env = _sessions.get(session_id)
-    if env is None:
-        raise HTTPException(status_code=404, detail="Session not found.")
+def state():
+    global current_session_id
+
+    if current_session_id is None:
+        return {"status": "not_initialized"}
+
+    env = _sessions.get(current_session_id)
     return env.state()
 
 
@@ -90,7 +108,10 @@ def list_tasks():
     }
 
 
-if __name__ == "__main__":
+def main():
     import uvicorn
     port = int(os.getenv("PORT", 7860))
-    uvicorn.run("src.server:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("server.app:app", host="0.0.0.0", port=port)
+
+if __name__ == "__main__":
+    main()
