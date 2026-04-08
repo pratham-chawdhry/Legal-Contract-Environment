@@ -95,6 +95,9 @@ class LegalContractEnv:
             "sections_read":  list(self._sections_read),
             "actions_taken":  self._actions_taken,
         }
+    
+    def close():
+        pass
 
     # ---------------------------------------------------------------- #
     # Internal helpers
