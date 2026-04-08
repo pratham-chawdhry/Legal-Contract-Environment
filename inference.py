@@ -43,7 +43,7 @@ from src.models import ContractAction, ContractObservation
 
 # Official OpenAI Endpoint API settings
 MODEL_NAME       = os.getenv("MODEL_NAME",    "gpt-4o")
-API_KEY          = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY", "MISSING_KEY")
+API_KEY          = os.getenv("API_BASE_URL") or os.getenv("API_KEY", "MISSING_KEY")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # only needed for docker-based envs
 
 BENCHMARK        = "legal_contract_review"
