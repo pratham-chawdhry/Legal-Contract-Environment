@@ -1,10 +1,11 @@
 """
-openai_api_inference.py — Legal Contract Review Agent (OpenAI)
+gemini_inference.py — Legal Contract Review Agent (Gemini)
 ===========================================
 
 Environment variables (set before running):
-    MODEL_NAME     Model name.    Default: gpt-4o
-    OPENAI_API_KEY API key.       Required to authenticate with OpenAI.
+    API_BASE_URL   LLM endpoint.  Default: https://generativelanguage.googleapis.com/v1beta/openai/
+    MODEL_NAME     Model name.    Default: gemini-2.5-flash
+    GEMINI_API_KEY API key.       Required to authenticate with Gemini.
     LOCAL_IMAGE_NAME  Docker image name if using from_docker_image() (optional)
 
 STDOUT FORMAT (OpenEnv spec — do not change):
@@ -13,9 +14,9 @@ STDOUT FORMAT (OpenEnv spec — do not change):
     [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 
 Usage:
-    python openai_api_inference.py                  # run all three tasks
-    python openai_api_inference.py --task easy
-    python openai_api_inference.py --task hard --steps 35
+    python gemini_inference.py                  # run all three tasks
+    python gemini_inference.py --task easy
+    python gemini_inference.py --task hard --steps 35
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ from dotenv import load_dotenv
 # Load .env with override so it always wins over existing env vars
 load_dotenv(override=True)
 
+# ── OpenAI client pointed at Gemini ──
 from openai import OpenAI
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -41,9 +43,10 @@ from src.models import ContractAction, ContractObservation
 # Configuration
 # ------------------------------------------------------------------ #
 
-# Official OpenAI Endpoint API settings
-MODEL_NAME       = os.getenv("MODEL_NAME",    "gpt-4o")
-API_KEY          = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY", "MISSING_KEY")
+# Gemini's OpenAI-compatible endpoint
+API_BASE_URL     = os.getenv("API_BASE_URL",  "https://generativelanguage.googleapis.com/v1beta/openai/")
+MODEL_NAME       = os.getenv("MODEL_NAME",    "gemini-2.5-flash")
+API_KEY          = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY", "MISSING_KEY")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # only needed for docker-based envs
 
 BENCHMARK        = "legal_contract_review"
@@ -380,8 +383,8 @@ def main() -> None:
 
     tasks = ["easy", "medium", "hard"] if args.task == "all" else [args.task]
 
-    # OpenAI client pointing at authentic OpenAI endpoints
-    client = OpenAI(api_key=API_KEY)
+    # OpenAI client pointing at Gemini
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
     all_results: List[Dict[str, Any]] = []
     for task_id in tasks:
