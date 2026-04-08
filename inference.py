@@ -1,16 +1,11 @@
 """
-inference.py — Legal Contract Review Agent
+openai_api_inference.py — Legal Contract Review Agent (OpenAI)
 ===========================================
 
 Environment variables (set before running):
-    API_BASE_URL   LLM endpoint.  Default: http://localhost:11434/v1  (Ollama)
-    MODEL_NAME     Model name.    Default: qwen3-vl:235b-cloud
-    HF_TOKEN       API key.       Default: "ollama"  (Ollama ignores the key)
+    MODEL_NAME     Model name.    Default: gpt-4o
+    OPENAI_API_KEY API key.       Required to authenticate with OpenAI.
     LOCAL_IMAGE_NAME  Docker image name if using from_docker_image() (optional)
-
-Ollama satisfies the "OpenAI Client" requirement because it exposes an
-OpenAI-compatible REST API at http://localhost:11434/v1.
-Run:  ollama serve   (in a separate terminal before running this script)
 
 STDOUT FORMAT (OpenEnv spec — do not change):
     [START] task=<task_name> env=<benchmark> model=<model_name>
@@ -18,9 +13,9 @@ STDOUT FORMAT (OpenEnv spec — do not change):
     [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 
 Usage:
-    python inference.py                  # run all three tasks
-    python inference.py --task easy
-    python inference.py --task hard --steps 35
+    python openai_api_inference.py                  # run all three tasks
+    python openai_api_inference.py --task easy
+    python openai_api_inference.py --task hard --steps 35
 """
 from __future__ import annotations
 
@@ -31,7 +26,11 @@ import sys
 import textwrap
 from typing import Any, Dict, List, Optional
 
-# ── OpenAI client pointed at Ollama (satisfies "must use OpenAI Client" rule) ──
+from dotenv import load_dotenv
+
+# Load .env with override so it always wins over existing env vars
+load_dotenv(override=True)
+
 from openai import OpenAI
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -42,10 +41,9 @@ from src.models import ContractAction, ContractObservation
 # Configuration
 # ------------------------------------------------------------------ #
 
-# Ollama's OpenAI-compatible endpoint — no real API key needed
-API_BASE_URL     = os.getenv("API_BASE_URL",  "http://localhost:11434/v1")
-MODEL_NAME       = os.getenv("MODEL_NAME",    "qwen3-vl:235b-cloud")
-API_KEY          = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "ollama")
+# Official OpenAI Endpoint API settings
+MODEL_NAME       = os.getenv("MODEL_NAME",    "gpt-4o")
+API_KEY          = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY", "MISSING_KEY")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # only needed for docker-based envs
 
 BENCHMARK        = "legal_contract_review"
@@ -106,7 +104,7 @@ RULES:
 - Never flag before reading the section — penalty applied.
 - Use DESCRIPTIVE clause_id values, not generic C1/C2/M1.
 - Only flag genuine issues — false positives are penalised.
-- For M&A: 1%% tipping basket and 18-month rep survival are MARKET STANDARD — do not flag them.
+- For M&A: 1% tipping basket and 18-month rep survival are MARKET STANDARD — do not flag them.
 - ALWAYS call summarize when done. Do NOT hit the step limit without summarizing.
 - If STEPS REMAINING <= 3, call summarize immediately.
 """).strip()
@@ -295,7 +293,7 @@ def run_episode(
                 messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
                 try:
-                    # ── OpenAI client → Ollama endpoint ──────────────────────
+                    # ── Official OpenAI API call ──────────────────────
                     completion = client.chat.completions.create(
                         model=MODEL_NAME,
                         messages=messages,
@@ -382,8 +380,8 @@ def main() -> None:
 
     tasks = ["easy", "medium", "hard"] if args.task == "all" else [args.task]
 
-    # OpenAI client pointed at local Ollama — no real key needed
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    # OpenAI client pointing at authentic OpenAI endpoints
+    client = OpenAI(api_key=API_KEY)
 
     all_results: List[Dict[str, Any]] = []
     for task_id in tasks:
@@ -396,7 +394,11 @@ def main() -> None:
         all_results.append(result)
 
     # Summary to stderr — keeps stdout clean for the spec parser
-    print("\nJSON_RESULTS:", json.dumps(all_results, indent=2), file=sys.stderr)
+    import re
+    json_str = json.dumps(all_results, indent=2)
+    # Format total_reward to strictly have 2 decimal places
+    json_str = re.sub(r'"total_reward":\s*(-?\d+(?:\.\d+)?)', lambda m: f'"total_reward": {float(m.group(1)):.2f}', json_str)
+    print("\nJSON_RESULTS:", json_str, file=sys.stderr)
 
 
 if __name__ == "__main__":
