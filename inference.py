@@ -345,7 +345,7 @@ def run_episode(
         n_total = obs.total_faults_in_contract
         n_caught = obs.faults_found_so_far
         raw_score = n_caught / n_total if n_total > 0 else 0.0
-        score   = min(max(raw_score, 0.01), 0.99)
+        score = min(max(raw_score, 0.01), 0.99)
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as exc:
@@ -365,7 +365,7 @@ def run_episode(
         "score":        score,
         "success":      success,
         "steps_taken":  steps_taken,
-        "total_reward": min(max(sum(rewards), 0.01), 0.99),
+        "total_reward": sum(rewards),
     }
 
 # ------------------------------------------------------------------ #
