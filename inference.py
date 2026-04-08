@@ -128,11 +128,11 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     )
 
 
-def log_end(success: bool, steps: int, score: int, rewards: List[float]) -> None:
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
         f"[END] success={str(success).lower()} steps={steps} "
-        f"score={score} rewards={rewards_str}",
+        f"score={score:.4f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -264,7 +264,7 @@ def run_episode(
     history:     List[Dict[str, str]] = []
     rewards:     List[float]          = []
     steps_taken: int                  = 0
-    score:       int                  = 0
+    score:       float                = 0.0
     success:     bool                 = False
 
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
@@ -344,7 +344,7 @@ def run_episode(
         n_total = obs.total_faults_in_contract
         n_caught = obs.faults_found_so_far
         raw_score = n_caught / n_total if n_total > 0 else 0.0
-        score   = 1 if raw_score > 0 else 0
+        score   = min(max(raw_score, 0.01), 0.99)
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as exc:
