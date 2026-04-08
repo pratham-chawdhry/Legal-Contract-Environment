@@ -1,5 +1,5 @@
 """
-openai_api_inference.py — Legal Contract Review Agent (OpenAI)
+inference.py — Legal Contract Review Agent (OpenAI)
 ===========================================
 
 Environment variables (set before running):
@@ -13,15 +13,16 @@ STDOUT FORMAT (OpenEnv spec — do not change):
     [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 
 Usage:
-    python openai_api_inference.py                  # run all three tasks
-    python openai_api_inference.py --task easy
-    python openai_api_inference.py --task hard --steps 35
+    python inference.py                  # run all three tasks
+    python inference.py --task easy
+    python inference.py --task hard --steps 35
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import sys
 import textwrap
 from typing import Any, Dict, List, Optional
@@ -41,24 +42,30 @@ from src.models import ContractAction, ContractObservation
 # Configuration
 # ------------------------------------------------------------------ #
 
-# Official OpenAI Endpoint API settings
 MODEL_NAME       = os.getenv("MODEL_NAME",    "gpt-4o")
 API_BASE_URL     = os.getenv("API_BASE_URL")
 API_KEY          = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "MISSING_KEY")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # only needed for docker-based envs
 
 BENCHMARK        = "legal_contract_review"
-MAX_STEPS        = int(os.getenv("MAX_STEPS",    "30"))
+MAX_STEPS        = int(os.getenv("MAX_STEPS",    "100"))
 TEMPERATURE      = float(os.getenv("TEMPERATURE", "0.1"))
-MAX_TOKENS       = int(os.getenv("MAX_TOKENS",   "500"))
 
 SUCCESS_SCORE_THRESHOLD = 0.1   # score in [0, 1] to count as success
 
 FALLBACK_ACTION = ContractAction(action_type="summarize", params={})
 
+# Max tokens per difficulty — harder tasks need more room for redline text
+MAX_TOKENS_BY_DIFFICULTY: Dict[str, int] = {
+    "easy":   1024,
+    "medium": 2048,
+    "hard":   2048,
+}
+MAX_TOKENS_DEFAULT = 2048
+
 
 # ------------------------------------------------------------------ #
-# System prompt (unchanged from original)
+# System prompt
 # ------------------------------------------------------------------ #
 
 SYSTEM_PROMPT = textwrap.dedent("""
@@ -138,7 +145,7 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     )
 
 # ------------------------------------------------------------------ #
-# Prompt builder (unchanged from original)
+# Prompt builder
 # ------------------------------------------------------------------ #
 
 def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> str:
@@ -176,9 +183,11 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
             + obs.current_section_text
         )
 
-    actions_str = "\n".join(f"  {a}" for a in obs.actions_taken[-6:]) or "  (none yet)"
+    # Show more recent actions so the model retains workflow context
+    actions_str = "\n".join(f"  {a}" for a in obs.actions_taken[-12:]) or "  (none yet)"
 
     hints: List[str] = []
+
     read_actions = sum(1 for a in obs.actions_taken if "read_section" in a)
     flag_actions = sum(
         1 for a in obs.actions_taken if "flag_clause" in a or "mark_missing" in a
@@ -188,9 +197,26 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
             "WARNING: Several sections read but nothing flagged yet. "
             "Use flag_clause / mark_missing if issues exist, or approve_section if clean."
         )
-    unread = [s for s in obs.section_statuses if not s.read]
-    if not unread and not obs.done:
-        hints.append("ALL SECTIONS READ. Call summarize to finalise the review.")
+
+    unread       = [s for s in obs.section_statuses if not s.read]
+    flags_done   = len(obs.flags) > 0
+    redlines_done = any(getattr(f, "redline_suggested", False) for f in obs.flags)
+
+    # Only tell the model to summarize once flagging AND redlining are done
+    if not unread and flags_done and redlines_done and not obs.done:
+        hints.append("ALL SECTIONS READ AND FLAGGED. Call summarize to finalise the review.")
+    elif not unread and not flags_done and not obs.done:
+        hints.append("ALL SECTIONS READ. Now flag risky clauses and missing provisions before summarizing.")
+
+    # Surface sections that were read but neither approved nor flagged
+    unreviewed = [
+        s for s in obs.section_statuses
+        if s.read and not s.approved and s.flags_count == 0
+    ]
+    if unreviewed:
+        names = ", ".join(s.section_name for s in unreviewed)
+        hints.append(f"Sections read but not yet approved or flagged: {names}")
+
     if steps_remaining <= 3 and not obs.done:
         hints.append(
             f"URGENT — ONLY {steps_remaining} STEPS REMAINING. "
@@ -230,7 +256,7 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
     """).strip()
 
 # ------------------------------------------------------------------ #
-# Action parser (unchanged from original)
+# Action parser
 # ------------------------------------------------------------------ #
 
 def parse_llm_response(text: str) -> ContractAction:
@@ -273,9 +299,15 @@ def run_episode(
     try:
         obs = env.reset()
 
+        # Pick token budget based on task difficulty surfaced in the observation
+        max_tokens = MAX_TOKENS_BY_DIFFICULTY.get(
+            getattr(obs, "difficulty", ""), MAX_TOKENS_DEFAULT
+        )
+
         if verbose:
             print(f"\n{'='*60}", file=sys.stderr)
             print(f"TASK: {task_id.upper()} — {obs.contract_title}", file=sys.stderr)
+            print(f"MAX_TOKENS for this task: {max_tokens}", file=sys.stderr)
             print(f"{'='*60}", file=sys.stderr)
 
         for step in range(1, max_steps + 1):
@@ -294,12 +326,11 @@ def run_episode(
                 messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
                 try:
-                    # ── Official OpenAI API call ──────────────────────
                     completion = client.chat.completions.create(
                         model=MODEL_NAME,
                         messages=messages,
                         temperature=TEMPERATURE,
-                        max_tokens=MAX_TOKENS,
+                        max_tokens=max_tokens,
                         stream=False,
                     )
                     response_text = (completion.choices[0].message.content or "").strip()
@@ -309,9 +340,10 @@ def run_episode(
 
                 history.append({"role": "assistant", "content": response_text or "{}"})
 
-                # Keep conversation window bounded (memory budget)
-                if len(history) > 24:
-                    history = history[-24:]
+                # Keep conversation window bounded — wider than before so medium/hard
+                # tasks don't lose track of early flags
+                if len(history) > 40:
+                    history = history[-40:]
 
             action = parse_llm_response(response_text)
 
@@ -324,9 +356,10 @@ def run_episode(
             rewards.append(reward)
             steps_taken = step
 
+            # Log the *parsed* action JSON, not the raw LLM text (avoids fenced output)
             log_step(
                 step=step,
-                action=response_text.replace("\n", " ")[:200],
+                action=json.dumps(action.model_dump()).replace("\n", " ")[:200],
                 reward=reward,
                 done=done,
                 error=error,
@@ -342,22 +375,30 @@ def run_episode(
             if done:
                 break
 
-        n_total = obs.total_faults_in_contract
-        n_caught = obs.faults_found_so_far
-        raw_score = n_caught / n_total if n_total > 0 else 0.0
-        score = min(max(raw_score, 0.01), 0.99)
+        # Extract real grader score from the summarize result message if available;
+        # fall back to raw recall only when summarize was never called.
+        score_match = re.search(r'Score=(\d+\.\d+)', obs.last_action_result or "")
+        if score_match:
+            score = float(score_match.group(1))
+        else:
+            n_total  = obs.total_faults_in_contract
+            n_caught = obs.faults_found_so_far
+            score = n_caught / n_total if n_total > 0 else 0.0
+
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as exc:
         print(f"[DEBUG] Episode error task={task_id}: {exc}", file=sys.stderr, flush=True)
 
     finally:
+        # LegalContractEnv may not implement close(); guard silently
         try:
             env.close()
+        except AttributeError:
+            pass
         except Exception as e:
             print(f"[DEBUG] env.close() error: {e}", file=sys.stderr, flush=True)
 
-        # Always emitted — even on exception
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
     return {
@@ -365,7 +406,7 @@ def run_episode(
         "score":        score,
         "success":      success,
         "steps_taken":  steps_taken,
-        "total_reward": sum(rewards),
+        "total_reward": round(sum(rewards), 4),
     }
 
 # ------------------------------------------------------------------ #
@@ -381,7 +422,6 @@ def main() -> None:
 
     tasks = ["easy", "medium", "hard"] if args.task == "all" else [args.task]
 
-    # OpenAI client pointing at authentic OpenAI endpoints or injected proxy
     if API_BASE_URL:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     else:
@@ -398,11 +438,17 @@ def main() -> None:
         all_results.append(result)
 
     # Summary to stderr — keeps stdout clean for the spec parser
-    import re
     json_str = json.dumps(all_results, indent=2)
-    # Format total_reward and score to strictly have 2 decimal places
-    json_str = re.sub(r'"total_reward":\s*(-?\d+(?:\.\d+)?)', lambda m: f'"total_reward": {float(m.group(1)):.2f}', json_str)
-    json_str = re.sub(r'"score":\s*(-?\d+(?:\.\d+)?)', lambda m: f'"score": {float(m.group(1)):.2f}', json_str)
+    json_str = re.sub(
+        r'"total_reward":\s*(-?\d+(?:\.\d+)?)',
+        lambda m: f'"total_reward": {float(m.group(1)):.2f}',
+        json_str,
+    )
+    json_str = re.sub(
+        r'"score":\s*(-?\d+(?:\.\d+)?)',
+        lambda m: f'"score": {float(m.group(1)):.2f}',
+        json_str,
+    )
     print("\nJSON_RESULTS:", json_str, file=sys.stderr)
 
 

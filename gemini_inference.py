@@ -52,7 +52,7 @@ LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # only needed for docker-based
 BENCHMARK        = "legal_contract_review"
 MAX_STEPS        = int(os.getenv("MAX_STEPS",    "100"))
 TEMPERATURE      = float(os.getenv("TEMPERATURE", "0.1"))
-MAX_TOKENS       = int(os.getenv("MAX_TOKENS",   "500"))
+MAX_TOKENS       = int(os.getenv("MAX_TOKENS",   "1024"))
 
 SUCCESS_SCORE_THRESHOLD = 0.1   # score in [0, 1] to count as success
 
@@ -207,7 +207,8 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
 
     return textwrap.dedent(f"""
     STEP {step}/{max_steps}  |  STEPS REMAINING: {steps_remaining}
-    TASK: {obs.task_id} ({obs.difficulty})
+    # TASK: {obs.task_id} ({obs.difficulty})
+    TASK: {obs.task_id}
     CONTRACT: {obs.contract_title}
     DESCRIPTION: {obs.description}
     REVIEW COMPLETE: {obs.done}
