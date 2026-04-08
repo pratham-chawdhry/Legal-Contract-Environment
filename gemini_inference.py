@@ -50,7 +50,7 @@ API_KEY          = os.getenv("API_KEY") or os.getenv("GEMINI_API_KEY", "MISSING_
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # only needed for docker-based envs
 
 BENCHMARK        = "legal_contract_review"
-MAX_STEPS        = int(os.getenv("MAX_STEPS",    "30"))
+MAX_STEPS        = int(os.getenv("MAX_STEPS",    "100"))
 TEMPERATURE      = float(os.getenv("TEMPERATURE", "0.1"))
 MAX_TOKENS       = int(os.getenv("MAX_TOKENS",   "500"))
 
@@ -178,7 +178,7 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
             + obs.current_section_text
         )
 
-    actions_str = "\n".join(f"  {a}" for a in obs.actions_taken[-6:]) or "  (none yet)"
+    actions_str = "\n".join(f"  {a}" for a in obs.actions_taken[-12:]) or "  (none yet)"
 
     hints: List[str] = []
     read_actions = sum(1 for a in obs.actions_taken if "read_section" in a)
@@ -191,8 +191,12 @@ def build_user_prompt(obs: ContractObservation, step: int, max_steps: int) -> st
             "Use flag_clause / mark_missing if issues exist, or approve_section if clean."
         )
     unread = [s for s in obs.section_statuses if not s.read]
-    if not unread and not obs.done:
-        hints.append("ALL SECTIONS READ. Call summarize to finalise the review.")
+    flags_done = len(obs.flags) > 0
+    redlines_done = any(getattr(f, "redline_suggested", False) for f in obs.flags)
+    if not unread and flags_done and redlines_done and not obs.done:
+        hints.append("ALL SECTIONS READ AND FLAGGED. Call summarize to finalise the review.")
+    elif not unread and not flags_done and not obs.done:
+        hints.append("ALL SECTIONS READ. Now flag risky clauses and missing provisions before summarizing.")
     if steps_remaining <= 3 and not obs.done:
         hints.append(
             f"URGENT — ONLY {steps_remaining} STEPS REMAINING. "
@@ -312,8 +316,8 @@ def run_episode(
                 history.append({"role": "assistant", "content": response_text or "{}"})
 
                 # Keep conversation window bounded (memory budget)
-                if len(history) > 24:
-                    history = history[-24:]
+                if len(history) > 40:
+                    history = history[-40:]
 
             action = parse_llm_response(response_text)
 
@@ -328,7 +332,7 @@ def run_episode(
 
             log_step(
                 step=step,
-                action=response_text.replace("\n", " ")[:200],
+                action=json.dumps(action.model_dump()).replace("\n", " ")[:200], 
                 reward=reward,
                 done=done,
                 error=error,
@@ -344,22 +348,22 @@ def run_episode(
             if done:
                 break
 
-        n_total = obs.total_faults_in_contract
-        n_caught = obs.faults_found_so_far
-        raw_score = n_caught / n_total if n_total > 0 else 0.0
-        score = min(max(raw_score, 0.01), 0.99)
+        # Extract real grader score from the summarize result message
+        import re as _re
+        _score_match = _re.search(r'Score=(\d+\.\d+)', obs.last_action_result)
+        if _score_match:
+            score = float(_score_match.group(1))
+        else:
+            # Fallback: raw recall (only if summarize was never called)
+            n_total  = obs.total_faults_in_contract
+            n_caught = obs.faults_found_so_far
+            score = n_caught / n_total if n_total > 0 else 0.0
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as exc:
         print(f"[DEBUG] Episode error task={task_id}: {exc}", file=sys.stderr, flush=True)
 
     finally:
-        try:
-            env.close()
-        except Exception as e:
-            print(f"[DEBUG] env.close() error: {e}", file=sys.stderr, flush=True)
-
-        # Always emitted — even on exception
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
     return {

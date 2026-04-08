@@ -193,12 +193,14 @@ class LegalContractEnv:
         score = grader_result.score
         self._passed = score >= 0.6
         self._done   = True
+        self._last_score = grader_result.score
 
         msg = (
             f"Summary complete. Score={score:.2f} | "
             f"TP={grader_result.true_positives} | "
             f"FP={grader_result.false_positives} | "
             f"Missed criticals={grader_result.missed_criticals} | "
+            f"Score = {getattr(self, '_last_score', 0.0):.4f} |"
             f"Passed={self._passed}"
         )
         return reward, msg
