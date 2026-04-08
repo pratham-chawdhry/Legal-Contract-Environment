@@ -28,8 +28,8 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
-# Load .env with override so it always wins over existing env vars
-load_dotenv(override=True)
+# Load .env without override so the server's injected environment variables always win
+load_dotenv(override=False)
 
 from openai import OpenAI
 
@@ -43,7 +43,8 @@ from src.models import ContractAction, ContractObservation
 
 # Official OpenAI Endpoint API settings
 MODEL_NAME       = os.getenv("MODEL_NAME",    "gpt-4o")
-API_KEY          = os.getenv("API_BASE_URL") or os.getenv("API_KEY", "MISSING_KEY")
+API_BASE_URL     = os.getenv("API_BASE_URL")
+API_KEY          = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "MISSING_KEY")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # only needed for docker-based envs
 
 BENCHMARK        = "legal_contract_review"
@@ -380,8 +381,11 @@ def main() -> None:
 
     tasks = ["easy", "medium", "hard"] if args.task == "all" else [args.task]
 
-    # OpenAI client pointing at authentic OpenAI endpoints
-    client = OpenAI(api_key=API_KEY)
+    # OpenAI client pointing at authentic OpenAI endpoints or injected proxy
+    if API_BASE_URL:
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    else:
+        client = OpenAI(api_key=API_KEY)
 
     all_results: List[Dict[str, Any]] = []
     for task_id in tasks:

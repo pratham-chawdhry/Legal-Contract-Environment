@@ -29,8 +29,8 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
-# Load .env with override so it always wins over existing env vars
-load_dotenv(override=True)
+# Load .env without override so the server's injected environment variables always win
+load_dotenv(override=False)
 
 # ── OpenAI client pointed at Gemini ──
 from openai import OpenAI
@@ -46,7 +46,7 @@ from src.models import ContractAction, ContractObservation
 # Gemini's OpenAI-compatible endpoint
 API_BASE_URL     = os.getenv("API_BASE_URL",  "https://generativelanguage.googleapis.com/v1beta/openai/")
 MODEL_NAME       = os.getenv("MODEL_NAME",    "gemini-2.5-flash")
-API_KEY          = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY", "MISSING_KEY")
+API_KEY          = os.getenv("API_KEY") or os.getenv("GEMINI_API_KEY", "MISSING_KEY")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # only needed for docker-based envs
 
 BENCHMARK        = "legal_contract_review"
